@@ -1,5 +1,5 @@
 {
-  "name": "Workflow 2: Job Lead Discovery",
+  "name": "Workflow 2: Job Lead Discovery + Pain Point Detection",
   "nodes": [
     {
       "parameters": {
@@ -76,7 +76,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const jobResults = $input.item.json.jobs_results || [];\nconst params = $('Extract Search Parameters').first().json;\nconst profile = $('Load Skill Profile (Supabase)').first().json;\n\nconst negativeKeywords = [\n  'mlm','commission only','door to door','crypto','adult','casino','gambling',\n  'unpaid internship','volunteer only','equity only','no salary',\n  'high ticket closer','life insurance only','cold calling'\n];\n\nconst avoidIndustries = profile.avoid_industries || [];\n\nconst filtered = jobResults\n  .filter(job => {\n    const text = ((job.title || '') + ' ' + (job.company_name || '') + ' ' + (job.description || '')).toLowerCase();\n    const blocked = [...negativeKeywords, ...avoidIndustries];\n    return !blocked.some(kw => text.includes(kw.toLowerCase()));\n  })\n  .slice(0, 10)\n  .map(job => ({\n    company_name: job.company_name || 'Unknown',\n    job_title: job.title || 'Unknown Role',\n    job_url: job.share_link || job.job_apply_link || null,\n    source: 'google_jobs',\n    location: job.location || params.location,\n    remote_status: params.remote_status,\n    salary_range: job.detected_extensions?.salary || null,\n    description: job.description || '',\n    user_id: params.user_id,\n    user_skills: profile.primary_skills || [],\n    user_tone: profile.tone || 'professional, helpful, direct'\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
+        "jsCode": "const jobResults = $input.item.json.jobs_results || [];\nconst params = $('Extract Search Parameters').first().json;\nconst profile = $('Load Skill Profile (Supabase)').first().json;\n\nconst negativeKeywords = [\n  'mlm','commission only','door to door','crypto','adult','casino','gambling',\n  'unpaid internship','volunteer only','equity only','no salary',\n  'high ticket closer','life insurance only','cold calling'\n];\n\nconst avoidIndustries = profile.avoid_industries || [];\n\nconst filtered = jobResults\n  .filter(job => {\n    const text = ((job.title || '') + ' ' + (job.company_name || '') + ' ' + (job.description || '')).toLowerCase();\n    const blocked = [...negativeKeywords, ...avoidIndustries];\n    return !blocked.some(kw => text.includes(kw.toLowerCase()));\n  })\n  .slice(0, 10)\n  .map(job => ({\n    company_name: job.company_name || 'Unknown',\n    job_title: job.title || 'Unknown Role',\n    job_url: job.share_link || job.job_apply_link || null,\n    source: 'google_jobs',\n    location: job.location || params.location,\n    remote_status: params.remote_status,\n    salary_range: job.detected_extensions?.salary || null,\n    description: (job.description || '').slice(0, 1500),\n    user_id: params.user_id,\n    user_skills: profile.primary_skills || [],\n    user_secondary_skills: profile.secondary_skills || [],\n    user_tone: profile.tone || 'professional, helpful, direct',\n    preferred_industries: profile.preferred_industries || []\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
       },
       "id": "filter-jobs",
       "name": "Filter & Normalize Jobs",
@@ -98,21 +98,21 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's job and contract opportunity analyst.\\n\\nCompare this job listing against the user's skill profile and return ONLY valid JSON with these exact keys:\\n{\\\"fit_score\\\": number (0-100), \\\"skill_match_score\\\": number (0-100), \\\"industry_match_score\\\": number (0-100), \\\"location_match_score\\\": number (0-100), \\\"pain_point_summary\\\": string, \\\"recommended_angle\\\": string, \\\"suggested_services\\\": string[], \\\"opportunity_type\\\": \\\"job\\\" | \\\"contract\\\" | \\\"freelance\\\" | \\\"consulting\\\", \\\"skill_gaps\\\": string[]}\\n\\nJob: {{ $json.job_title }} at {{ $json.company_name }}\\nLocation: {{ $json.location }} ({{ $json.remote_status }})\\nSalary: {{ $json.salary_range || 'Not listed' }}\\nDescription: {{ $json.description.slice(0, 800) }}\\n\\nUser Skills: {{ $json.user_skills.join(', ') }}\\n\\nBe honest. Do not overstate qualifications. Focus on real value the user can provide.\"\n    }\n  ]\n}",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1500,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's Pain Point Detection Engine.\\n\\nAnalyze this job posting to uncover the underlying business problem and score all opportunity types.\\n\\nReturn ONLY valid JSON with these exact keys:\\n{\\n  \\\"underlying_problem\\\": string (what business problem caused this hire),\\n  \\\"pain_point_summary\\\": string (1-2 sentences, plain English),\\n  \\\"recommended_angle\\\": string (how the user should position their outreach),\\n  \\\"suggested_services\\\": string[],\\n  \\\"opportunity_type\\\": \\\"job\\\" | \\\"contract\\\" | \\\"freelance\\\" | \\\"consulting\\\",\\n  \\\"opportunity_scores\\\": {\\n    \\\"employment\\\": number (0-100),\\n    \\\"consulting\\\": number (0-100),\\n    \\\"agency\\\": number (0-100),\\n    \\\"automation\\\": number (0-100),\\n    \\\"saas\\\": number (0-100)\\n  },\\n  \\\"opportunity_classification\\\": \\\"Green\\\" | \\\"Yellow\\\" | \\\"Red\\\" | \\\"Gold\\\",\\n  \\\"fit_score\\\": number (0-100, overall user fit),\\n  \\\"skill_match_score\\\": number (0-100),\\n  \\\"industry_match_score\\\": number (0-100),\\n  \\\"location_match_score\\\": number (0-100),\\n  \\\"skill_gaps\\\": string[]\\n}\\n\\nClassification guide:\\n- Green: Best as employment. Company is stable, role is clear, not strong service opportunity.\\n- Yellow: Employment + consulting both viable. Some gaps a consultant could fill.\\n- Red: Strong service/agency opportunity. Company likely needs an agency or consultant more than an employee.\\n- Gold: High-value immediate outreach. Multiple opportunity types, clear budget signals, strong fit.\\n\\nOpportunity score guide:\\n- employment: fit as a traditional employee\\n- consulting: fit as an independent consultant or advisor\\n- agency: fit as an agency partner delivering the service\\n- automation: fit for selling automation (n8n, AI workflows, tools)\\n- saas: fit for a software or productized service solution\\n\\nJob: {{ $json.job_title }} at {{ $json.company_name }}\\nLocation: {{ $json.location }} ({{ $json.remote_status }})\\nSalary: {{ $json.salary_range || 'Not listed' }}\\nDescription: {{ $json.description }}\\n\\nUser Primary Skills: {{ $json.user_skills.join(', ') }}\\nUser Secondary Skills: {{ $json.user_secondary_skills.join(', ') }}\\nPreferred Industries: {{ $json.preferred_industries.join(', ') }}\\n\\nBe honest. Do not overstate. Focus on real value the user can deliver.\"\n    }\n  ]\n}",
         "options": {}
       },
-      "id": "ai-job-analysis",
-      "name": "AI Job Analysis (Claude)",
+      "id": "ai-pain-point-detection",
+      "name": "Pain Point Detection (Claude)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [1250, 300]
     },
     {
       "parameters": {
-        "jsCode": "const job = $('Filter & Normalize Jobs').item.json;\nconst claudeResponse = $input.item.json;\n\nlet analysis = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  analysis = { fit_score: 50, pain_point_summary: 'Analysis unavailable', opportunity_type: 'job' };\n}\n\nreturn [{ json: { ...job, analysis } }];"
+        "jsCode": "const job = $('Filter & Normalize Jobs').item.json;\nconst claudeResponse = $input.item.json;\n\nlet analysis = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  analysis = {\n    fit_score: 50,\n    pain_point_summary: 'Analysis unavailable',\n    opportunity_type: 'job',\n    opportunity_scores: { employment: 50, consulting: 30, agency: 20, automation: 20, saas: 10 },\n    opportunity_classification: 'Green'\n  };\n}\n\nreturn [{ json: { ...job, analysis } }];"
       },
-      "id": "parse-job-response",
-      "name": "Parse AI Response",
+      "id": "parse-pain-point-response",
+      "name": "Parse Pain Point Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1450, 300]
@@ -140,6 +140,8 @@
             { "column": "recommended_angle", "value": "={{ $json.analysis.recommended_angle }}" },
             { "column": "suggested_services", "value": "={{ $json.analysis.suggested_services }}" },
             { "column": "opportunity_type", "value": "={{ $json.analysis.opportunity_type }}" },
+            { "column": "opportunity_scores", "value": "={{ $json.analysis.opportunity_scores }}" },
+            { "column": "opportunity_classification", "value": "={{ $json.analysis.opportunity_classification }}" },
             { "column": "status", "value": "new" }
           ]
         }
@@ -179,12 +181,12 @@
       "main": [[{ "node": "Filter & Normalize Jobs", "type": "main", "index": 0 }]]
     },
     "Filter & Normalize Jobs": {
-      "main": [[{ "node": "AI Job Analysis (Claude)", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Pain Point Detection (Claude)", "type": "main", "index": 0 }]]
     },
-    "AI Job Analysis (Claude)": {
-      "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]]
+    "Pain Point Detection (Claude)": {
+      "main": [[{ "node": "Parse Pain Point Response", "type": "main", "index": 0 }]]
     },
-    "Parse AI Response": {
+    "Parse Pain Point Response": {
       "main": [[{ "node": "Save Job Lead (Supabase)", "type": "main", "index": 0 }]]
     },
     "Save Job Lead (Supabase)": {

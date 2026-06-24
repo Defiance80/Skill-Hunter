@@ -1,5 +1,15 @@
 // Types aligned with /database/schema.sql (OpenClaw)
 
+export type OpportunityClassification = "Green" | "Yellow" | "Red" | "Gold";
+
+export interface OpportunityScores {
+  employment: number;
+  consulting: number;
+  agency: number;
+  automation: number;
+  saas: number;
+}
+
 export type LeadStatus =
   | "new"
   | "reviewed"
@@ -89,6 +99,8 @@ export interface JobLead {
   recommended_angle: string | null;
   suggested_services: string[] | null;
   opportunity_type: string | null;
+  opportunity_scores: OpportunityScores | null;
+  opportunity_classification: OpportunityClassification | null;
   status: LeadStatus;
   created_at: string;
   updated_at: string;

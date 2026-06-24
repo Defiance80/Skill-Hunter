@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
-import { MetricCard, BusinessLeadCard } from "@/components/lead-card";
+import { MetricCard, BusinessLeadCard, JobLeadCard } from "@/components/lead-card";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Search, ArrowRight } from "lucide-react";
+import { Search, ArrowRight, Flame } from "lucide-react";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -23,6 +23,7 @@ export default async function DashboardPage() {
     { count: draftCount },
     { data: topLeads },
     { data: profile },
+    { data: hotJobLeads },
   ] = await Promise.all([
     supabase
       .from("business_leads")
@@ -53,6 +54,13 @@ export default async function DashboardPage() {
       .select("id")
       .eq("user_id", user.id)
       .maybeSingle(),
+    supabase
+      .from("job_leads")
+      .select("*")
+      .eq("user_id", user.id)
+      .in("opportunity_classification", ["Gold", "Red"])
+      .order("fit_score", { ascending: false })
+      .limit(4),
   ]);
 
   return (
@@ -101,10 +109,25 @@ export default async function DashboardPage() {
         <MetricCard label="Draft Emails" value={draftCount ?? 0} />
       </div>
 
+      {hotJobLeads && hotJobLeads.length > 0 && (
+        <div>
+          <div className="mb-4 flex items-center gap-2">
+            <Flame className="h-5 w-5 text-yellow-400" />
+            <h2 className="text-lg font-medium text-zinc-200">Hot Job Leads</h2>
+            <span className="text-sm text-zinc-500">— Gold &amp; Red classifications</span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {hotJobLeads.map((lead) => (
+              <JobLeadCard key={lead.id} lead={lead} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-medium text-zinc-200">
-            Highest-Scoring Leads
+            Highest-Scoring Business Leads
           </h2>
           <Link
             href="/leads/business"

@@ -1,9 +1,19 @@
 import { ScoreBadge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { formatRelativeDate } from "@/lib/utils";
-import type { BusinessLead, JobLead } from "@/lib/types";
+import type { BusinessLead, JobLead, OpportunityClassification } from "@/lib/types";
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
+
+const CLASSIFICATION_BADGE: Record<
+  OpportunityClassification,
+  { bg: string; text: string }
+> = {
+  Green:  { bg: "bg-emerald-500/20", text: "text-emerald-300" },
+  Yellow: { bg: "bg-amber-500/20",   text: "text-amber-300"   },
+  Red:    { bg: "bg-red-500/20",     text: "text-red-300"     },
+  Gold:   { bg: "bg-yellow-500/20",  text: "text-yellow-300"  },
+};
 
 export function BusinessLeadCard({ lead }: { lead: BusinessLead }) {
   return (
@@ -40,38 +50,47 @@ export function BusinessLeadCard({ lead }: { lead: BusinessLead }) {
 }
 
 export function JobLeadCard({ lead }: { lead: JobLead }) {
+  const classStyle = lead.opportunity_classification
+    ? CLASSIFICATION_BADGE[lead.opportunity_classification]
+    : null;
+
   return (
-    <Card className="transition-colors hover:border-zinc-700">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate font-medium text-zinc-100">{lead.job_title}</h3>
-          <p className="text-sm text-zinc-500">
-            {lead.company_name} · {lead.location ?? lead.remote_status}
-          </p>
-          {lead.pain_point_summary && (
-            <p className="mt-2 line-clamp-2 text-sm text-zinc-400">
-              {lead.pain_point_summary}
+    <Link href={`/leads/jobs/${lead.id}`}>
+      <Card className="transition-colors hover:border-zinc-700">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="truncate font-medium text-zinc-100">{lead.job_title}</h3>
+              {classStyle && lead.opportunity_classification && (
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${classStyle.bg} ${classStyle.text}`}
+                >
+                  {lead.opportunity_classification}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-zinc-500">
+              {lead.company_name} · {lead.location ?? lead.remote_status}
             </p>
+            {lead.pain_point_summary && (
+              <p className="mt-2 line-clamp-2 text-sm text-zinc-400">
+                {lead.pain_point_summary}
+              </p>
+            )}
+          </div>
+          <ScoreBadge score={lead.fit_score} />
+        </div>
+        <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
+          <span>{formatRelativeDate(lead.created_at)}</span>
+          {lead.job_url && (
+            <span className="flex items-center gap-1">
+              <ExternalLink className="h-3 w-3" />
+              View listing
+            </span>
           )}
         </div>
-        <ScoreBadge score={lead.fit_score} />
-      </div>
-      <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
-        <span>{formatRelativeDate(lead.created_at)}</span>
-        {lead.job_url && (
-          <a
-            href={lead.job_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 hover:text-zinc-300"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ExternalLink className="h-3 w-3" />
-            View listing
-          </a>
-        )}
-      </div>
-    </Card>
+      </Card>
+    </Link>
   );
 }
 
