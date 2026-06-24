@@ -82,29 +82,15 @@
     },
     {
       "parameters": {
-        "method": "POST",
+        "method": "GET",
         "url": "https://serpapi.com/search",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpQueryAuth",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            {
-              "name": "engine",
-              "value": "google_maps"
-            },
-            {
-              "name": "q",
-              "value": "={{ $json.industry }} {{ $json.location }}"
-            },
-            {
-              "name": "type",
-              "value": "search"
-            },
-            {
-              "name": "api_key",
-              "value": "={{ $env.SERP_API_KEY }}"
-            }
+            { "name": "engine", "value": "google_maps" },
+            { "name": "q", "value": "={{ $json.industry }} near {{ $json.location }}" },
+            { "name": "type", "value": "search" },
+            { "name": "api_key", "value": "={{ $env.SERP_API_KEY }}" }
           ]
         },
         "options": {}
@@ -117,7 +103,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Filter and clean Google Maps results\nconst results = $input.item.json.local_results || [];\nconst negativeKeywords = $input.first().json.avoid_industries || [];\n\nconst filtered = results\n  .filter(business => {\n    const name = business.title?.toLowerCase() || '';\n    const description = business.description?.toLowerCase() || '';\n    \n    // Filter out negative keywords\n    return !negativeKeywords.some(keyword => \n      name.includes(keyword.toLowerCase()) || \n      description.includes(keyword.toLowerCase())\n    );\n  })\n  .slice(0, 10) // Limit to 10 leads per search\n  .map(business => ({\n    business_name: business.title,\n    website_url: business.website,\n    location: business.address,\n    phone: business.phone,\n    rating: business.rating,\n    reviews: business.reviews,\n    type: business.type,\n    industry: $json.industry,\n    user_id: $json.user_id\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
+        "jsCode": "const results = $input.item.json.local_results || [];\nconst avoidIndustries = $('Load User Profile (Supabase)').first().json.avoid_industries || [];\n\nconst negativeJobKeywords = [\n  'mlm','commission only','door to door','crypto','adult','casino',\n  'gambling','government','school district','enterprise only','franchise only'\n];\n\nconst filtered = results\n  .filter(b => {\n    const name = (b.title || '').toLowerCase();\n    const blocked = [...avoidIndustries, ...negativeJobKeywords];\n    return !blocked.some(kw => name.includes(kw.toLowerCase()));\n  })\n  .slice(0, 10)\n  .map(b => ({\n    business_name: b.title || '',\n    website_url: b.website || null,\n    location: b.address || null,\n    phone: b.phone || null,\n    rating: b.rating || null,\n    reviews: b.reviews || null,\n    industry: $('Extract Search Parameters').first().json.industry,\n    user_id: $('Extract Search Parameters').first().json.user_id\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
       },
       "id": "filter-results",
       "name": "Filter & Clean Results",
@@ -127,22 +113,23 @@
     },
     {
       "parameters": {
-        "method": "POST",
+        "method": "GET",
         "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            {
-              "name": "url",
-              "value": "={{ $json.website_url }}"
-            },
-            {
-              "name": "key",
-              "value": "={{ $env.PAGESPEED_API_KEY }}"
-            }
+            { "name": "url", "value": "={{ $json.website_url }}" },
+            { "name": "strategy", "value": "mobile" },
+            { "name": "key", "value": "={{ $env.PAGESPEED_API_KEY }}" }
           ]
         },
-        "options": {}
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
       },
       "id": "check-website",
       "name": "Check Website Quality (PageSpeed)",
@@ -152,51 +139,46 @@
     },
     {
       "parameters": {
+        "jsCode": "const lead = $('Filter & Clean Results').item.json;\nconst pagespeed = $input.item.json;\n\nlet performanceScore = null;\ntry {\n  const score = pagespeed.lighthouseResult?.categories?.performance?.score;\n  performanceScore = score !== undefined ? Math.round(score * 100) : null;\n} catch (e) {}\n\nreturn [{ json: { ...lead, pagespeed_score: performanceScore } }];"
+      },
+      "id": "merge-pagespeed",
+      "name": "Merge PageSpeed Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
         "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "https://api.anthropic.com/v1/messages",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer {{ $env.OPENAI_API_KEY }}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "model",
-              "value": "gpt-4o"
-            },
-            {
-              "name": "messages",
-              "value": "={{ [{\"role\": \"system\", \"content\": \"You are Skill Hunter's business opportunity analyst. Analyze this business and return structured JSON.\"}, {\"role\": \"user\", \"content\": `Analyze this business:\n\nBusiness: ${$json.business_name}\nIndustry: ${$json.industry}\nWebsite: ${$json.website_url}\nLocation: ${$json.location}\n\nReturn JSON with: summary, biggest_issue, best_opportunity, recommended_services, website_score (0-100), seo_score (0-100), social_score (0-100), lead_score (0-100), pain_point_summary, audit_teaser`}] }}"
-            },
-            {
-              "name": "temperature",
-              "value": "0.7"
-            },
-            {
-              "name": "response_format",
-              "value": "={ {\"type\": \"json_object\"} }"
-            }
-          ]
-        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's business opportunity analyst.\\n\\nAnalyze this business and return ONLY valid JSON with these exact keys:\\n{\\\"summary\\\": string, \\\"biggest_issue\\\": string, \\\"best_opportunity\\\": string, \\\"recommended_services\\\": string[], \\\"website_score\\\": number (0-100), \\\"seo_score\\\": number (0-100), \\\"social_score\\\": number (0-100), \\\"lead_score\\\": number (0-100), \\\"pain_point_summary\\\": string, \\\"audit_teaser\\\": string}\\n\\nBusiness: {{ $json.business_name }}\\nIndustry: {{ $json.industry }}\\nWebsite: {{ $json.website_url || 'None' }}\\nLocation: {{ $json.location }}\\nRating: {{ $json.rating || 'Unknown' }} ({{ $json.reviews || 0 }} reviews)\\nMobile Speed Score: {{ $json.pagespeed_score !== null ? $json.pagespeed_score + '/100' : 'Could not check' }}\\n\\nBe honest, calm, consultative. Identify real improvement opportunities.\"\n    }\n  ]\n}",
         "options": {}
       },
-      "id": "ai-analysis",
-      "name": "AI Analysis (OpenAI)",
+      "id": "ai-analysis-claude",
+      "name": "AI Analysis (Claude)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [1450, 300]
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $('Merge PageSpeed Score').item.json;\nconst claudeResponse = $input.item.json;\n\nlet analysis = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  analysis = { lead_score: 50, pain_point_summary: 'Analysis unavailable', recommended_services: [] };\n}\n\nreturn [{ json: { ...lead, ai_analysis: analysis } }];"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
     },
     {
       "parameters": {
@@ -205,58 +187,20 @@
         "table": "business_leads",
         "columns": {
           "mappings": [
-            {
-              "column": "user_id",
-              "value": "={{ $json.user_id }}"
-            },
-            {
-              "column": "business_name",
-              "value": "={{ $json.business_name }}"
-            },
-            {
-              "column": "industry",
-              "value": "={{ $json.industry }}"
-            },
-            {
-              "column": "website_url",
-              "value": "={{ $json.website_url }}"
-            },
-            {
-              "column": "location",
-              "value": "={{ $json.location }}"
-            },
-            {
-              "column": "phone",
-              "value": "={{ $json.phone }}"
-            },
-            {
-              "column": "lead_score",
-              "value": "={{ $json.ai_analysis.lead_score }}"
-            },
-            {
-              "column": "website_score",
-              "value": "={{ $json.ai_analysis.website_score }}"
-            },
-            {
-              "column": "seo_score",
-              "value": "={{ $json.ai_analysis.seo_score }}"
-            },
-            {
-              "column": "social_score",
-              "value": "={{ $json.ai_analysis.social_score }}"
-            },
-            {
-              "column": "pain_point_summary",
-              "value": "={{ $json.ai_analysis.pain_point_summary }}"
-            },
-            {
-              "column": "recommended_services",
-              "value": "={{ $json.ai_analysis.recommended_services }}"
-            },
-            {
-              "column": "status",
-              "value": "new"
-            }
+            { "column": "user_id", "value": "={{ $json.user_id }}" },
+            { "column": "business_name", "value": "={{ $json.business_name }}" },
+            { "column": "industry", "value": "={{ $json.industry }}" },
+            { "column": "website_url", "value": "={{ $json.website_url }}" },
+            { "column": "location", "value": "={{ $json.location }}" },
+            { "column": "phone", "value": "={{ $json.phone }}" },
+            { "column": "lead_score", "value": "={{ $json.ai_analysis.lead_score }}" },
+            { "column": "website_score", "value": "={{ $json.ai_analysis.website_score }}" },
+            { "column": "seo_score", "value": "={{ $json.ai_analysis.seo_score }}" },
+            { "column": "social_score", "value": "={{ $json.ai_analysis.social_score }}" },
+            { "column": "pain_point_summary", "value": "={{ $json.ai_analysis.pain_point_summary }}" },
+            { "column": "recommended_services", "value": "={{ $json.ai_analysis.recommended_services }}" },
+            { "column": "audit_data", "value": "={{ $json.ai_analysis }}" },
+            { "column": "status", "value": "new" }
           ]
         }
       },
@@ -264,7 +208,7 @@
       "name": "Save to Supabase",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1650, 300],
+      "position": [2050, 300],
       "credentials": {
         "supabaseApi": {
           "id": "supabase-creds",
@@ -281,7 +225,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1850, 300]
+      "position": [2250, 300]
     }
   ],
   "connections": {
@@ -301,9 +245,15 @@
       "main": [[{ "node": "Check Website Quality (PageSpeed)", "type": "main", "index": 0 }]]
     },
     "Check Website Quality (PageSpeed)": {
-      "main": [[{ "node": "AI Analysis (OpenAI)", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Merge PageSpeed Score", "type": "main", "index": 0 }]]
     },
-    "AI Analysis (OpenAI)": {
+    "Merge PageSpeed Score": {
+      "main": [[{ "node": "AI Analysis (Claude)", "type": "main", "index": 0 }]]
+    },
+    "AI Analysis (Claude)": {
+      "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]]
+    },
+    "Parse AI Response": {
       "main": [[{ "node": "Save to Supabase", "type": "main", "index": 0 }]]
     },
     "Save to Supabase": {
@@ -314,7 +264,7 @@
     "executionOrder": "v1"
   },
   "staticData": null,
-  "tags": [],
+  "tags": ["skill-hunter"],
   "meta": {
     "instanceId": "skill-hunter"
   }

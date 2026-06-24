@@ -1,0 +1,128 @@
+{
+  "name": "Workflow 6: Resume Parser",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resume-parser",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "user_id", "name": "user_id", "value": "={{ $json.body.user_id }}", "type": "string" },
+            { "id": "resume_text", "name": "resume_text", "value": "={{ $json.body.resume_text }}", "type": "string" }
+          ]
+        }
+      },
+      "id": "extract-params",
+      "name": "Extract Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's resume parser and skill profile extractor.\\n\\nAnalyze this resume and extract a structured skill profile. Return ONLY valid JSON with these exact keys:\\n{\\n  \\\"primary_skills\\\": string[] (top 5-8 core skills, tools, or expertise areas),\\n  \\\"secondary_skills\\\": string[] (supporting skills, nice-to-haves),\\n  \\\"preferred_industries\\\": string[] (industries the person has served or is best suited for — match to: Law Firms, MedSpas, Dental Practices, Chiropractors, Real Estate Agents, Mortgage Brokers, Insurance Agencies, Restaurants, Contractors, HVAC Companies, Plumbers, Electricians, Auto Shops, Fitness Studios, Local Retail, E-commerce Brands, Nonprofits, Consultants, Coaches, Event Venues, Healthcare Clinics, Home Services),\\n  \\\"avoid_industries\\\": string[] (industries to avoid based on resume context),\\n  \\\"preferred_locations\\\": string[] (locations mentioned or implied),\\n  \\\"skill_level\\\": \\\"entry\\\" | \\\"mid\\\" | \\\"senior\\\" | \\\"expert\\\",\\n  \\\"tone\\\": string (suggested outreach tone, e.g. 'professional, consultative, direct'),\\n  \\\"minimum_fit_score\\\": number (50-80, suggested minimum lead score to pursue),\\n  \\\"summary\\\": string (2-3 sentence professional summary)\\n}\\n\\nBe accurate. Do not overstate qualifications. Extract only what is clearly supported by the resume.\\n\\nResume:\\n{{ $json.resume_text.slice(0, 4000) }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "parse-resume-claude",
+      "name": "Parse Resume (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const params = $('Extract Parameters').first().json;\nconst claudeResponse = $input.item.json;\n\nlet profile = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  profile = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  return [{ json: { error: 'Failed to parse resume', user_id: params.user_id } }];\n}\n\nreturn [{ json: { user_id: params.user_id, ...profile } }];"
+      },
+      "id": "parse-claude-response",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "public",
+        "table": "skill_profiles",
+        "columns": {
+          "mappings": [
+            { "column": "user_id", "value": "={{ $json.user_id }}" },
+            { "column": "resume_text", "value": "={{ $('Extract Parameters').first().json.resume_text }}" },
+            { "column": "primary_skills", "value": "={{ $json.primary_skills }}" },
+            { "column": "secondary_skills", "value": "={{ $json.secondary_skills }}" },
+            { "column": "preferred_industries", "value": "={{ $json.preferred_industries }}" },
+            { "column": "avoid_industries", "value": "={{ $json.avoid_industries }}" },
+            { "column": "preferred_locations", "value": "={{ $json.preferred_locations }}" },
+            { "column": "skill_level", "value": "={{ $json.skill_level }}" },
+            { "column": "tone", "value": "={{ $json.tone }}" },
+            { "column": "minimum_fit_score", "value": "={{ $json.minimum_fit_score }}" }
+          ]
+        },
+        "conflictColumns": "user_id"
+      },
+      "id": "upsert-skill-profile",
+      "name": "Upsert Skill Profile (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"extracted\": { \"primary_skills\": $('Parse Claude Response').first().json.primary_skills, \"skill_level\": $('Parse Claude Response').first().json.skill_level, \"preferred_industries\": $('Parse Claude Response').first().json.preferred_industries, \"summary\": $('Parse Claude Response').first().json.summary }, \"message\": \"Resume parsed and skill profile updated\" } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Extract Parameters", "type": "main", "index": 0 }]]
+    },
+    "Extract Parameters": {
+      "main": [[{ "node": "Parse Resume (Claude)", "type": "main", "index": 0 }]]
+    },
+    "Parse Resume (Claude)": {
+      "main": [[{ "node": "Parse Claude Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Claude Response": {
+      "main": [[{ "node": "Upsert Skill Profile (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Upsert Skill Profile (Supabase)": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["skill-hunter"],
+  "meta": { "instanceId": "skill-hunter" }
+}

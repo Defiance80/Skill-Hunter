@@ -1,0 +1,198 @@
+{
+  "name": "Workflow 2: Job Lead Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-lead-search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "skills", "name": "skills", "value": "={{ $json.body.skills }}", "type": "array" },
+            { "id": "location", "name": "location", "value": "={{ $json.body.location }}", "type": "string" },
+            { "id": "remote_status", "name": "remote_status", "value": "={{ $json.body.remote_status || 'any' }}", "type": "string" },
+            { "id": "user_id", "name": "user_id", "value": "={{ $json.body.user_id }}", "type": "string" }
+          ]
+        }
+      },
+      "id": "extract-params",
+      "name": "Extract Search Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "skill_profiles",
+        "returnAll": false,
+        "limit": 1,
+        "where": {
+          "conditions": [
+            { "key": "user_id", "value": "={{ $json.user_id }}", "operation": "equals" }
+          ]
+        }
+      },
+      "id": "load-skill-profile",
+      "name": "Load Skill Profile (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "engine", "value": "google_jobs" },
+            { "name": "q", "value": "={{ $('Extract Search Parameters').first().json.skills.join(' OR ') }} {{ $('Extract Search Parameters').first().json.remote_status === 'remote' ? 'remote' : '' }}" },
+            { "name": "location", "value": "={{ $('Extract Search Parameters').first().json.location }}" },
+            { "name": "api_key", "value": "={{ $env.SERP_API_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "search-jobs-serp",
+      "name": "Search Jobs (SerpAPI Google Jobs)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const jobResults = $input.item.json.jobs_results || [];\nconst params = $('Extract Search Parameters').first().json;\nconst profile = $('Load Skill Profile (Supabase)').first().json;\n\nconst negativeKeywords = [\n  'mlm','commission only','door to door','crypto','adult','casino','gambling',\n  'unpaid internship','volunteer only','equity only','no salary',\n  'high ticket closer','life insurance only','cold calling'\n];\n\nconst avoidIndustries = profile.avoid_industries || [];\n\nconst filtered = jobResults\n  .filter(job => {\n    const text = ((job.title || '') + ' ' + (job.company_name || '') + ' ' + (job.description || '')).toLowerCase();\n    const blocked = [...negativeKeywords, ...avoidIndustries];\n    return !blocked.some(kw => text.includes(kw.toLowerCase()));\n  })\n  .slice(0, 10)\n  .map(job => ({\n    company_name: job.company_name || 'Unknown',\n    job_title: job.title || 'Unknown Role',\n    job_url: job.share_link || job.job_apply_link || null,\n    source: 'google_jobs',\n    location: job.location || params.location,\n    remote_status: params.remote_status,\n    salary_range: job.detected_extensions?.salary || null,\n    description: job.description || '',\n    user_id: params.user_id,\n    user_skills: profile.primary_skills || [],\n    user_tone: profile.tone || 'professional, helpful, direct'\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
+      },
+      "id": "filter-jobs",
+      "name": "Filter & Normalize Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's job and contract opportunity analyst.\\n\\nCompare this job listing against the user's skill profile and return ONLY valid JSON with these exact keys:\\n{\\\"fit_score\\\": number (0-100), \\\"skill_match_score\\\": number (0-100), \\\"industry_match_score\\\": number (0-100), \\\"location_match_score\\\": number (0-100), \\\"pain_point_summary\\\": string, \\\"recommended_angle\\\": string, \\\"suggested_services\\\": string[], \\\"opportunity_type\\\": \\\"job\\\" | \\\"contract\\\" | \\\"freelance\\\" | \\\"consulting\\\", \\\"skill_gaps\\\": string[]}\\n\\nJob: {{ $json.job_title }} at {{ $json.company_name }}\\nLocation: {{ $json.location }} ({{ $json.remote_status }})\\nSalary: {{ $json.salary_range || 'Not listed' }}\\nDescription: {{ $json.description.slice(0, 800) }}\\n\\nUser Skills: {{ $json.user_skills.join(', ') }}\\n\\nBe honest. Do not overstate qualifications. Focus on real value the user can provide.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "ai-job-analysis",
+      "name": "AI Job Analysis (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const job = $('Filter & Normalize Jobs').item.json;\nconst claudeResponse = $input.item.json;\n\nlet analysis = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  analysis = { fit_score: 50, pain_point_summary: 'Analysis unavailable', opportunity_type: 'job' };\n}\n\nreturn [{ json: { ...job, analysis } }];"
+      },
+      "id": "parse-job-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "job_leads",
+        "columns": {
+          "mappings": [
+            { "column": "user_id", "value": "={{ $json.user_id }}" },
+            { "column": "company_name", "value": "={{ $json.company_name }}" },
+            { "column": "job_title", "value": "={{ $json.job_title }}" },
+            { "column": "job_url", "value": "={{ $json.job_url }}" },
+            { "column": "source", "value": "={{ $json.source }}" },
+            { "column": "location", "value": "={{ $json.location }}" },
+            { "column": "remote_status", "value": "={{ $json.remote_status }}" },
+            { "column": "salary_range", "value": "={{ $json.salary_range }}" },
+            { "column": "fit_score", "value": "={{ $json.analysis.fit_score }}" },
+            { "column": "skill_match_score", "value": "={{ $json.analysis.skill_match_score }}" },
+            { "column": "industry_match_score", "value": "={{ $json.analysis.industry_match_score }}" },
+            { "column": "location_match_score", "value": "={{ $json.analysis.location_match_score }}" },
+            { "column": "pain_point_summary", "value": "={{ $json.analysis.pain_point_summary }}" },
+            { "column": "recommended_angle", "value": "={{ $json.analysis.recommended_angle }}" },
+            { "column": "suggested_services", "value": "={{ $json.analysis.suggested_services }}" },
+            { "column": "opportunity_type", "value": "={{ $json.analysis.opportunity_type }}" },
+            { "column": "status", "value": "new" }
+          ]
+        }
+      },
+      "id": "save-job-lead",
+      "name": "Save Job Lead (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"leads_found\": $input.all().length, \"message\": \"Job lead search complete\" } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Extract Search Parameters", "type": "main", "index": 0 }]]
+    },
+    "Extract Search Parameters": {
+      "main": [[{ "node": "Load Skill Profile (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Load Skill Profile (Supabase)": {
+      "main": [[{ "node": "Search Jobs (SerpAPI Google Jobs)", "type": "main", "index": 0 }]]
+    },
+    "Search Jobs (SerpAPI Google Jobs)": {
+      "main": [[{ "node": "Filter & Normalize Jobs", "type": "main", "index": 0 }]]
+    },
+    "Filter & Normalize Jobs": {
+      "main": [[{ "node": "AI Job Analysis (Claude)", "type": "main", "index": 0 }]]
+    },
+    "AI Job Analysis (Claude)": {
+      "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]]
+    },
+    "Parse AI Response": {
+      "main": [[{ "node": "Save Job Lead (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Save Job Lead (Supabase)": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["skill-hunter"],
+  "meta": { "instanceId": "skill-hunter" }
+}

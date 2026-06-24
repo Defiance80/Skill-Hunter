@@ -1,0 +1,229 @@
+{
+  "name": "Workflow 4: Email Draft + Send Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "email-draft",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "user_id", "name": "user_id", "value": "={{ $json.body.user_id }}", "type": "string" },
+            { "id": "lead_type", "name": "lead_type", "value": "={{ $json.body.lead_type }}", "type": "string" },
+            { "id": "lead_id", "name": "lead_id", "value": "={{ $json.body.lead_id }}", "type": "string" }
+          ]
+        }
+      },
+      "id": "extract-params",
+      "name": "Extract Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "skill_profiles",
+        "returnAll": false,
+        "limit": 1,
+        "where": {
+          "conditions": [
+            { "key": "user_id", "value": "={{ $json.user_id }}", "operation": "equals" }
+          ]
+        }
+      },
+      "id": "load-skill-profile",
+      "name": "Load Skill Profile",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const params = $('Extract Parameters').first().json;\nconst leadType = params.lead_type;\nconst leadId = params.lead_id;\n\nreturn [{ json: { lead_type: leadType, lead_id: leadId, user_id: params.user_id } }];"
+      },
+      "id": "route-lead-type",
+      "name": "Route Lead Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "business_leads",
+        "returnAll": false,
+        "limit": 1,
+        "where": {
+          "conditions": [
+            { "key": "id", "value": "={{ $json.lead_id }}", "operation": "equals" }
+          ]
+        }
+      },
+      "id": "fetch-business-lead",
+      "name": "Fetch Business Lead",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "job_leads",
+        "returnAll": false,
+        "limit": 1,
+        "where": {
+          "conditions": [
+            { "key": "id", "value": "={{ $('Route Lead Type').first().json.lead_id }}", "operation": "equals" }
+          ]
+        }
+      },
+      "id": "fetch-job-lead",
+      "name": "Fetch Job Lead",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const params = $('Route Lead Type').first().json;\nconst profile = $('Load Skill Profile').first().json;\nconst tone = profile.tone || 'professional, helpful, direct, consultative';\n\nlet lead = {};\nlet promptType = '';\n\nif (params.lead_type === 'business') {\n  lead = $('Fetch Business Lead').first().json;\n  promptType = `BUSINESS LEAD EMAIL\n\nBusiness: ${lead.business_name}\nIndustry: ${lead.industry}\nLocation: ${lead.location}\nWebsite: ${lead.website_url || 'None'}\nPain Point: ${lead.pain_point_summary}\nRecommended Services: ${(lead.recommended_services || []).join(', ')}\nLead Score: ${lead.lead_score}/100`;\n} else {\n  lead = $('Fetch Job Lead').first().json;\n  promptType = `JOB LEAD EMAIL\n\nCompany: ${lead.company_name}\nJob Title: ${lead.job_title}\nLocation: ${lead.location} (${lead.remote_status})\nPain Point: ${lead.pain_point_summary}\nRecommended Angle: ${lead.recommended_angle}\nOpportunity Type: ${lead.opportunity_type}\nFit Score: ${lead.fit_score}/100`;\n}\n\nreturn [{ json: { ...params, lead, profile, promptType, tone } }];"
+      },
+      "id": "merge-lead-data",
+      "name": "Merge Lead Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's outreach email writer.\\n\\nWrite a professional outreach email for this lead. Return ONLY valid JSON with these exact keys:\\n{\\\"subject\\\": string, \\\"body\\\": string}\\n\\nRules:\\n- Short, helpful, no hype\\n- No scare tactics, no fake urgency\\n- Mention one specific observation\\n- Keep it consultative\\n- Tone: {{ $json.tone }}\\n- Body should be 3-5 short paragraphs max\\n\\nSender skills: {{ ($json.profile.primary_skills || []).join(', ') }}\\n\\n{{ $json.promptType }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "generate-email",
+      "name": "Generate Email (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const merged = $('Merge Lead Data').first().json;\nconst claudeResponse = $input.item.json;\n\nlet email = { subject: 'Following up', body: 'Draft unavailable' };\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  email = jsonMatch ? JSON.parse(jsonMatch[0]) : email;\n} catch (e) {}\n\nreturn [{ json: { ...merged, email } }];"
+      },
+      "id": "parse-email",
+      "name": "Parse Email Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "email_drafts",
+        "columns": {
+          "mappings": [
+            { "column": "user_id", "value": "={{ $json.user_id }}" },
+            { "column": "lead_type", "value": "={{ $json.lead_type }}" },
+            { "column": "lead_id", "value": "={{ $json.lead_id }}" },
+            { "column": "subject", "value": "={{ $json.email.subject }}" },
+            { "column": "body", "value": "={{ $json.email.body }}" },
+            { "column": "tone", "value": "={{ $json.tone }}" },
+            { "column": "status", "value": "draft" }
+          ]
+        }
+      },
+      "id": "save-draft",
+      "name": "Save Email Draft (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1850, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"draft_id\": $json.id, \"subject\": $('Parse Email Response').first().json.email.subject, \"message\": \"Email draft created\" } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2050, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Extract Parameters", "type": "main", "index": 0 }]]
+    },
+    "Extract Parameters": {
+      "main": [[{ "node": "Load Skill Profile", "type": "main", "index": 0 }]]
+    },
+    "Load Skill Profile": {
+      "main": [[{ "node": "Route Lead Type", "type": "main", "index": 0 }]]
+    },
+    "Route Lead Type": {
+      "main": [
+        [{ "node": "Fetch Business Lead", "type": "main", "index": 0 }],
+        [{ "node": "Fetch Job Lead", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Business Lead": {
+      "main": [[{ "node": "Merge Lead Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Job Lead": {
+      "main": [[{ "node": "Merge Lead Data", "type": "main", "index": 1 }]]
+    },
+    "Merge Lead Data": {
+      "main": [[{ "node": "Generate Email (Claude)", "type": "main", "index": 0 }]]
+    },
+    "Generate Email (Claude)": {
+      "main": [[{ "node": "Parse Email Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Email Response": {
+      "main": [[{ "node": "Save Email Draft (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Save Email Draft (Supabase)": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["skill-hunter"],
+  "meta": { "instanceId": "skill-hunter" }
+}

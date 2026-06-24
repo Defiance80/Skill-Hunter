@@ -1,0 +1,198 @@
+{
+  "name": "Workflow 3: Audit Landing Page Scan",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "audit-scan",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "website_url", "name": "website_url", "value": "={{ $json.body.website_url }}", "type": "string" },
+            { "id": "requester_email", "name": "requester_email", "value": "={{ $json.body.requester_email || null }}", "type": "string" },
+            { "id": "requester_name", "name": "requester_name", "value": "={{ $json.body.requester_name || null }}", "type": "string" }
+          ]
+        }
+      },
+      "id": "extract-params",
+      "name": "Extract Audit Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "url", "value": "={{ $json.website_url }}" },
+            { "name": "strategy", "value": "mobile" },
+            { "name": "category", "value": "performance" },
+            { "name": "category", "value": "accessibility" },
+            { "name": "category", "value": "seo" },
+            { "name": "key", "value": "={{ $env.PAGESPEED_API_KEY }}" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": { "neverError": true }
+          }
+        }
+      },
+      "id": "pagespeed-mobile",
+      "name": "PageSpeed Insights (Mobile)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "url", "value": "={{ $('Extract Audit Parameters').first().json.website_url }}" },
+            { "name": "strategy", "value": "desktop" },
+            { "name": "category", "value": "performance" },
+            { "name": "key", "value": "={{ $env.PAGESPEED_API_KEY }}" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": { "neverError": true }
+          }
+        }
+      },
+      "id": "pagespeed-desktop",
+      "name": "PageSpeed Insights (Desktop)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const params = $('Extract Audit Parameters').first().json;\nconst mobile = $('PageSpeed Insights (Mobile)').first().json;\nconst desktop = $('PageSpeed Insights (Desktop)').first().json;\n\nfunction getScore(data, category) {\n  try {\n    const score = data.lighthouseResult?.categories?.[category]?.score;\n    return score !== undefined ? Math.round(score * 100) : null;\n  } catch (e) { return null; }\n}\n\nconst mobilePerf = getScore(mobile, 'performance');\nconst desktopPerf = getScore(desktop, 'performance');\nconst seoScore = getScore(mobile, 'seo');\nconst accessibilityScore = getScore(mobile, 'accessibility');\n\nconst lcp = mobile.lighthouseResult?.audits?.['largest-contentful-paint']?.displayValue || null;\nconst fid = mobile.lighthouseResult?.audits?.['total-blocking-time']?.displayValue || null;\nconst cls = mobile.lighthouseResult?.audits?.['cumulative-layout-shift']?.displayValue || null;\n\nreturn [{\n  json: {\n    website_url: params.website_url,\n    requester_email: params.requester_email,\n    requester_name: params.requester_name,\n    mobile_performance: mobilePerf,\n    desktop_performance: desktopPerf,\n    seo_score: seoScore,\n    accessibility_score: accessibilityScore,\n    core_web_vitals: { lcp, fid, cls }\n  }\n}];"
+      },
+      "id": "merge-scores",
+      "name": "Merge PageSpeed Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1500,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's website audit analyst.\\n\\nAnalyze this website based on the performance data provided. Return ONLY valid JSON with these exact keys:\\n{\\\"website_score\\\": number (0-100), \\\"seo_score\\\": number (0-100), \\\"social_score\\\": number (0-100), \\\"lead_conversion_score\\\": number (0-100), \\\"brand_trust_score\\\": number (0-100), \\\"summary\\\": string, \\\"biggest_issue\\\": string, \\\"best_opportunity\\\": string, \\\"top_improvements\\\": string[] (3-5 items), \\\"audit_teaser\\\": string (1-2 sentences teasing deeper findings), \\\"pain_point_summary\\\": string}\\n\\nWebsite: {{ $json.website_url }}\\nMobile Speed: {{ $json.mobile_performance !== null ? $json.mobile_performance + '/100' : 'Could not check' }}\\nDesktop Speed: {{ $json.desktop_performance !== null ? $json.desktop_performance + '/100' : 'Could not check' }}\\nSEO Score: {{ $json.seo_score !== null ? $json.seo_score + '/100' : 'Could not check' }}\\nAccessibility: {{ $json.accessibility_score !== null ? $json.accessibility_score + '/100' : 'Could not check' }}\\nLCP: {{ $json.core_web_vitals.lcp || 'Unknown' }}\\nCLS: {{ $json.core_web_vitals.cls || 'Unknown' }}\\n\\nBe calm, consultative, and specific. Never use fear tactics. Focus on real opportunities.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "ai-audit-analysis",
+      "name": "AI Audit Analysis (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const scanData = $('Merge PageSpeed Scores').first().json;\nconst claudeResponse = $input.item.json;\n\nlet analysis = {};\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : {};\n} catch (e) {\n  analysis = { website_score: 50, summary: 'Audit unavailable', audit_teaser: 'We found several areas for improvement.' };\n}\n\nconst auditData = {\n  ...analysis,\n  raw_scores: {\n    mobile_performance: scanData.mobile_performance,\n    desktop_performance: scanData.desktop_performance,\n    pagespeed_seo: scanData.seo_score,\n    accessibility: scanData.accessibility_score,\n    core_web_vitals: scanData.core_web_vitals\n  }\n};\n\nreturn [{\n  json: {\n    website_url: scanData.website_url,\n    requester_email: scanData.requester_email,\n    requester_name: scanData.requester_name,\n    audit_data: auditData,\n    teaser: analysis.audit_teaser || 'We found several improvement opportunities.',\n    pain_point_summary: analysis.pain_point_summary || ''\n  }\n}];"
+      },
+      "id": "build-audit-result",
+      "name": "Build Audit Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "audits",
+        "columns": {
+          "mappings": [
+            { "column": "website_url", "value": "={{ $json.website_url }}" },
+            { "column": "requester_email", "value": "={{ $json.requester_email }}" },
+            { "column": "requester_name", "value": "={{ $json.requester_name }}" },
+            { "column": "audit_data", "value": "={{ $json.audit_data }}" },
+            { "column": "teaser_unlocked", "value": "=true" },
+            { "column": "full_unlocked", "value": "=false" }
+          ]
+        }
+      },
+      "id": "save-audit",
+      "name": "Save Audit (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1500, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"audit_id\": $json.id, \"teaser\": $('Build Audit Result').first().json.teaser, \"message\": \"Audit complete\" } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1700, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Extract Audit Parameters", "type": "main", "index": 0 }]]
+    },
+    "Extract Audit Parameters": {
+      "main": [
+        [{ "node": "PageSpeed Insights (Mobile)", "type": "main", "index": 0 }],
+        [{ "node": "PageSpeed Insights (Desktop)", "type": "main", "index": 0 }]
+      ]
+    },
+    "PageSpeed Insights (Mobile)": {
+      "main": [[{ "node": "Merge PageSpeed Scores", "type": "main", "index": 0 }]]
+    },
+    "PageSpeed Insights (Desktop)": {
+      "main": [[{ "node": "Merge PageSpeed Scores", "type": "main", "index": 1 }]]
+    },
+    "Merge PageSpeed Scores": {
+      "main": [[{ "node": "AI Audit Analysis (Claude)", "type": "main", "index": 0 }]]
+    },
+    "AI Audit Analysis (Claude)": {
+      "main": [[{ "node": "Build Audit Result", "type": "main", "index": 0 }]]
+    },
+    "Build Audit Result": {
+      "main": [[{ "node": "Save Audit (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Save Audit (Supabase)": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["skill-hunter"],
+  "meta": { "instanceId": "skill-hunter" }
+}

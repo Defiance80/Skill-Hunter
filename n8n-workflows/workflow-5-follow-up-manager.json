@@ -1,0 +1,168 @@
+{
+  "name": "Workflow 5: Follow-Up Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 12 }]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger (Every 12h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "outreach_logs",
+        "returnAll": true,
+        "where": {
+          "conditions": [
+            { "key": "status", "value": "sent", "operation": "equals" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-sent-outreach",
+      "name": "Fetch Sent Outreach Logs",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst DEFAULT_DELAY_DAYS = 3;\n\nconst eligibleForFollowUp = $input.all()\n  .filter(item => {\n    const log = item.json;\n    const sentAt = new Date(log.sent_at);\n    const daysSinceSent = (now - sentAt) / (1000 * 60 * 60 * 24);\n    const hasReplied = !!log.replied_at;\n    const hasClicked = !!log.clicked_at;\n    return daysSinceSent >= DEFAULT_DELAY_DAYS && !hasReplied;\n  })\n  .map(item => ({ json: item.json }));\n\nif (eligibleForFollowUp.length === 0) {\n  return [{ json: { skip: true, message: 'No follow-ups needed at this time' } }];\n}\n\nreturn eligibleForFollowUp;"
+      },
+      "id": "check-follow-up-eligibility",
+      "name": "Check Follow-Up Eligibility",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-no-followups",
+      "name": "Skip if None Eligible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are Skill Hunter's follow-up email writer.\\n\\nWrite a brief, friendly follow-up email for an outreach that had no reply. Return ONLY valid JSON:\\n{\\\"subject\\\": string, \\\"body\\\": string}\\n\\nRules:\\n- 2-3 sentences maximum\\n- Not pushy, just a gentle check-in\\n- Reference their potential interest or the original outreach topic\\n- Offer to help or answer questions\\n\\nOriginal subject: {{ $json.subject }}\\nRecipient: {{ $json.recipient_email }}\\nSent {{ Math.round((new Date() - new Date($json.sent_at)) / (1000*60*60*24)) }} days ago\\nLink was {{ $json.clicked_at ? 'clicked' : 'not clicked' }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "generate-followup",
+      "name": "Generate Follow-Up (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const log = $('Check Follow-Up Eligibility').item.json;\nconst claudeResponse = $input.item.json;\n\nlet email = { subject: 'Following up', body: 'Just checking in to see if you had any questions.' };\ntry {\n  const content = claudeResponse.content?.[0]?.text || '{}';\n  const jsonMatch = content.match(/\\{[\\s\\S]*\\}/);\n  email = jsonMatch ? JSON.parse(jsonMatch[0]) : email;\n} catch (e) {}\n\nreturn [{ json: { ...log, follow_up_email: email } }];"
+      },
+      "id": "parse-followup",
+      "name": "Parse Follow-Up Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "email_drafts",
+        "columns": {
+          "mappings": [
+            { "column": "user_id", "value": "={{ $json.user_id }}" },
+            { "column": "lead_type", "value": "={{ $json.lead_type }}" },
+            { "column": "lead_id", "value": "={{ $json.lead_id }}" },
+            { "column": "subject", "value": "={{ $json.follow_up_email.subject }}" },
+            { "column": "body", "value": "={{ $json.follow_up_email.body }}" },
+            { "column": "tone", "value": "follow-up" },
+            { "column": "status", "value": "draft" }
+          ]
+        }
+      },
+      "id": "save-followup-draft",
+      "name": "Save Follow-Up Draft",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1450, 400],
+      "credentials": {
+        "supabaseApi": { "id": "supabase-creds", "name": "Supabase account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.all();\nconst processed = results.filter(r => !r.json.skip);\nconsole.log(`Follow-up manager: ${processed.length} follow-up drafts created`);\nreturn [{ json: { processed: processed.length, timestamp: new Date().toISOString() } }];"
+      },
+      "id": "log-completion",
+      "name": "Log Completion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (Every 12h)": {
+      "main": [[{ "node": "Fetch Sent Outreach Logs", "type": "main", "index": 0 }]]
+    },
+    "Fetch Sent Outreach Logs": {
+      "main": [[{ "node": "Check Follow-Up Eligibility", "type": "main", "index": 0 }]]
+    },
+    "Check Follow-Up Eligibility": {
+      "main": [[{ "node": "Skip if None Eligible", "type": "main", "index": 0 }]]
+    },
+    "Skip if None Eligible": {
+      "main": [
+        [{ "node": "Log Completion", "type": "main", "index": 0 }],
+        [{ "node": "Generate Follow-Up (Claude)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate Follow-Up (Claude)": {
+      "main": [[{ "node": "Parse Follow-Up Email", "type": "main", "index": 0 }]]
+    },
+    "Parse Follow-Up Email": {
+      "main": [[{ "node": "Save Follow-Up Draft", "type": "main", "index": 0 }]]
+    },
+    "Save Follow-Up Draft": {
+      "main": [[{ "node": "Log Completion", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["skill-hunter"],
+  "meta": { "instanceId": "skill-hunter" }
+}
