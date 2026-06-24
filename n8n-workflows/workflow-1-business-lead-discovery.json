@@ -1,0 +1,321 @@
+{
+  "name": "Workflow 1: Business Lead Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "business-lead-search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "industry",
+              "name": "industry",
+              "value": "={{ $json.body.industry }}",
+              "type": "string"
+            },
+            {
+              "id": "location",
+              "name": "location",
+              "value": "={{ $json.body.location }}",
+              "type": "string"
+            },
+            {
+              "id": "radius",
+              "name": "radius",
+              "value": "={{ $json.body.radius }}",
+              "type": "number"
+            },
+            {
+              "id": "user_id",
+              "name": "user_id",
+              "value": "={{ $json.body.user_id }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "extract-params",
+      "name": "Extract Search Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "skill_profiles",
+        "returnAll": false,
+        "limit": 1,
+        "where": {
+          "conditions": [
+            {
+              "key": "user_id",
+              "value": "={{ $json.user_id }}",
+              "operation": "equals"
+            }
+          ]
+        }
+      },
+      "id": "load-user-profile",
+      "name": "Load User Profile (Supabase)",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://serpapi.com/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google_maps"
+            },
+            {
+              "name": "q",
+              "value": "={{ $json.industry }} {{ $json.location }}"
+            },
+            {
+              "name": "type",
+              "value": "search"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.SERP_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "search-google-maps",
+      "name": "Search Google Maps (SerpAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter and clean Google Maps results\nconst results = $input.item.json.local_results || [];\nconst negativeKeywords = $input.first().json.avoid_industries || [];\n\nconst filtered = results\n  .filter(business => {\n    const name = business.title?.toLowerCase() || '';\n    const description = business.description?.toLowerCase() || '';\n    \n    // Filter out negative keywords\n    return !negativeKeywords.some(keyword => \n      name.includes(keyword.toLowerCase()) || \n      description.includes(keyword.toLowerCase())\n    );\n  })\n  .slice(0, 10) // Limit to 10 leads per search\n  .map(business => ({\n    business_name: business.title,\n    website_url: business.website,\n    location: business.address,\n    phone: business.phone,\n    rating: business.rating,\n    reviews: business.reviews,\n    type: business.type,\n    industry: $json.industry,\n    user_id: $json.user_id\n  }));\n\nreturn filtered.map(item => ({ json: item }));"
+      },
+      "id": "filter-results",
+      "name": "Filter & Clean Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/pagespeedonline/v5/runPagespeed",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.website_url }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $env.PAGESPEED_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "check-website",
+      "name": "Check Website Quality (PageSpeed)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "gpt-4o"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{\"role\": \"system\", \"content\": \"You are Skill Hunter's business opportunity analyst. Analyze this business and return structured JSON.\"}, {\"role\": \"user\", \"content\": `Analyze this business:\n\nBusiness: ${$json.business_name}\nIndustry: ${$json.industry}\nWebsite: ${$json.website_url}\nLocation: ${$json.location}\n\nReturn JSON with: summary, biggest_issue, best_opportunity, recommended_services, website_score (0-100), seo_score (0-100), social_score (0-100), lead_score (0-100), pain_point_summary, audit_teaser`}] }}"
+            },
+            {
+              "name": "temperature",
+              "value": "0.7"
+            },
+            {
+              "name": "response_format",
+              "value": "={ {\"type\": \"json_object\"} }"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ai-analysis",
+      "name": "AI Analysis (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "business_leads",
+        "columns": {
+          "mappings": [
+            {
+              "column": "user_id",
+              "value": "={{ $json.user_id }}"
+            },
+            {
+              "column": "business_name",
+              "value": "={{ $json.business_name }}"
+            },
+            {
+              "column": "industry",
+              "value": "={{ $json.industry }}"
+            },
+            {
+              "column": "website_url",
+              "value": "={{ $json.website_url }}"
+            },
+            {
+              "column": "location",
+              "value": "={{ $json.location }}"
+            },
+            {
+              "column": "phone",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "column": "lead_score",
+              "value": "={{ $json.ai_analysis.lead_score }}"
+            },
+            {
+              "column": "website_score",
+              "value": "={{ $json.ai_analysis.website_score }}"
+            },
+            {
+              "column": "seo_score",
+              "value": "={{ $json.ai_analysis.seo_score }}"
+            },
+            {
+              "column": "social_score",
+              "value": "={{ $json.ai_analysis.social_score }}"
+            },
+            {
+              "column": "pain_point_summary",
+              "value": "={{ $json.ai_analysis.pain_point_summary }}"
+            },
+            {
+              "column": "recommended_services",
+              "value": "={{ $json.ai_analysis.recommended_services }}"
+            },
+            {
+              "column": "status",
+              "value": "new"
+            }
+          ]
+        }
+      },
+      "id": "save-to-supabase",
+      "name": "Save to Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1650, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase-creds",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"leads_found\": $input.all().length, \"message\": \"Business lead search complete\" } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Extract Search Parameters", "type": "main", "index": 0 }]]
+    },
+    "Extract Search Parameters": {
+      "main": [[{ "node": "Load User Profile (Supabase)", "type": "main", "index": 0 }]]
+    },
+    "Load User Profile (Supabase)": {
+      "main": [[{ "node": "Search Google Maps (SerpAPI)", "type": "main", "index": 0 }]]
+    },
+    "Search Google Maps (SerpAPI)": {
+      "main": [[{ "node": "Filter & Clean Results", "type": "main", "index": 0 }]]
+    },
+    "Filter & Clean Results": {
+      "main": [[{ "node": "Check Website Quality (PageSpeed)", "type": "main", "index": 0 }]]
+    },
+    "Check Website Quality (PageSpeed)": {
+      "main": [[{ "node": "AI Analysis (OpenAI)", "type": "main", "index": 0 }]]
+    },
+    "AI Analysis (OpenAI)": {
+      "main": [[{ "node": "Save to Supabase", "type": "main", "index": 0 }]]
+    },
+    "Save to Supabase": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "meta": {
+    "instanceId": "skill-hunter"
+  }
+}
